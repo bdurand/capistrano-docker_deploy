@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+
+# Script to manage a cluster of docker containers with the same configuration running on sequential ports.
+#
+# The --name parameter will be used to assign names to the containers as "name.number" where number is the
+# number of the started container starting at 1.
+#
+# The --count paramter can be used to specify the number of containers to start up. If the script finds that
+# more than that number of containers are already running, it will first shut down the excess containers.
+# It will then shutdown the running containers one at a time and start up a new one before shutting down the
+# next container.
+#
+# The --image parameter specifies the docker image to start up. It can be either a tag or an image id. This
+# parameter is required if --count is greater than zero.
+#
+# The --port paramters specifies port mapping in the form "container_port:base_host_port" where container
+# port is the exposed port to map from the containers. The base host port is the port number to start mapping
+# the container ports to. If the base host port is not specified, then the container port will be used as the
+# base host port. For instance, `--port=80:8000 --count=2` will start two containers with the first one mapping
+# host port 8000 to container port 80 and the second mapping host port 8001 to container port 80.
+#
+# The --hostname parameter can be used to specify a base host name for the containers. The host name for each
+# container will be "container_name.base_host_hamer" where container name uses a hyphen instead of a period as
+# the delimiter.
+#
+# The --healthcheck parameter can be used to specify either a command to run inside the container or a URL
+# to ping from within the container to determine if the container is up. The next container will not be shutdown
+# until the previous one is determined to be up when this parameter is specified.
+#
+# The --timeout parameter can be used to specify a timeout for how long to wait for a container to stop or start
+# before assuming something is wrong. In the case of stopping the container, the container will be force killed
+# after the specified number of seconds. If starting a container times out, then the restart script will be stopped
+# at that point and no more containers will be restarted.
+#
+# The --config parameter can be used to specify a file that contains more command line arguments for this script. This
+# parameter can be specified multiple times. The files should be property files in the form "arg=val" or "arg val" or "arg"
+# on each line. Comments can be used in the configuration files using "#".
+#
+# The --command parameter can be used to specify the command each docker container should run.
+#
+# The --force parameter can be used to specify that containers should always be restarted. The default behavior
+# is to only restart containers if they are not running the specified image.
+#
+# The --one-off parameter can be used to specify that a one off container should be spun up instead of stopping
+# and starting containers in the cluster.
+#
+# The --verbose parameter can be used for debugging and will show all the shell commands as they are run.
+#
+# All other parameters are passed through to the `docker run` command.
+
+set -o errexit
+
+usage() {
+  script_name=$(basename $0)
+  echo "Usage: $script_name"
+  echo "  --name -n CONTAINER_NAME_PREFIX (or --one-off)"
+  echo "  [--count -c CONTAINER_COUNT] (default 1)"
+  echo "  [--image -i DOCKER_IMAGE] (image tag or id; required if --count > 0)"
+  echo "  [--port -p CONTAINER_PORT[:BASE_HOST_PORT]]"
+  echo "  [--hostname -h CONTAINER_BASE_HOST_NAME]"
+  echo "  [--healthcheck COMMAND|CURL_URL]"
+  echo "  [--timeout SECONDS] (default 120)"
+  echo "  [--config CONFIG_FILE_PATH]"
+  echo "  [--command DOCKER_RUN_COMMAND]"
+  echo "  [--verbose]"
+  echo "  All other options are passed through to 'docker run'"
+}
+
+read_arguments() {
+  while [ "$1" != "" ]; do
+    typeset arg=$1
+    typeset val=
+    if [[ $arg =~ ^--?[^-]+ ]]; then
+      if [[ $arg =~ ^-.+= ]]; then
+        arg="${1%=*}"
+        val="${1#*=}"
+      fi
+    fi
+
+    case $arg in
+      --image )
+        [[ -z $val ]] && shift && val=$1
+        DOCKER_IMAGE=$val
+        ;;
+      --name )
+        [[ -z $val ]] && shift && val=$1
+        CONTAINER_NAME_PREFIX=$val
+        ;;
+      --count )
+        [[ -z $val ]] && shift && val=$1
+        CONTAINER_COUNT=$val
+        ;;
+      --port )
+        [[ -z $val ]] && shift && val=$1
+        PORT_MAPPPING+=($val)
+        ;;
+      --hostname )
+        [[ -z $val ]] && shift && val=$1
+        CONTAINER_BASE_HOST_NAME=$val
+        ;;
+      --config )
+        [[ -z $val ]] && shift && val=$1
+        cat "$val" > /dev/null
+        typeset config_args=
+        IFS=$'\n\r' config_args=($(sed 's/#.*//g' "$val" | grep -v '^[[:space:]]*$' | sed 's/^ *//g' | sed -E 's/^([^-])/--\1/g' | sed -E 's/^([^ =]+) /\1=/g'))
+        read_arguments ${config_args[@]}
+        unset IFS
+        ;;
+      --command )
+        [[ -z $val ]] && shift && val=$1
+        DOCKER_RUN_COMMAND="$DOCKER_RUN_COMMAND $val"
+        ;;
+      --one-off )
+        ONE_OFF_CONTAINER="1"
+        ;;
+      --healthcheck )
+        [[ -z $val ]] && shift && val=$1
+        HEALTHCHECK=$val
+        ;;
+      --timeout )
+        [[ -z $val ]] && shift && val=$1
+        TIMEOUT=$val
+        ;;
+      --force )
+        FORCE_RESTART="1"
+        ;;
+      --help )
+        usage
+        exit
+        ;;
+      --verbose )
+        set -o xtrace
+        CMD_OUT=/dev/stdout
+        ;;
+      * )
+        DOCKER_RUN_ARGS="$DOCKER_RUN_ARGS $1"
+    esac
+    shift
+  done
+}
+
+# Return port mapping arguments for docker run. Ports are passed in to
+# the command as `--port base_host_port:container_port`. The host port
+# will be incremented for each container started so each container will
+# be mapped to it's own host port.
+docker_port_args() {
+  typeset port_args=
+  for port_info in "${PORT_MAPPPING[@]}"; do
+    typeset split_port=
+    IFS=':' read -ra split_port <<< "$port_info"
+    unset IFS
+    typeset base_port=${split_port[0]}
+    typeset container_port=${split_port[1]}
+    if [[ $container_port == "" ]]; then
+      container_port=$base_port
+    fi
+    typeset host_port=`expr $base_port + $1 - 1`
+    port_args="-p $host_port:$container_port"
+  done
+  echo $port_args
+}
+
+# Run the docker health check command. Returns the exit status of
+# running the command on the specified container. If the command is a
+# URL, then it will be fetched with curl within the container.
+docker_healthcheck() {
+  typeset container_id=$1
+  typeset cmd=$2
+  if [[ $cmd =~ ^https?:// ]]; then
+    cmd="curl --silent --fail $cmd"
+  fi
+  echo `/usr/bin/env docker exec "$container_id" $cmd > /dev/null; echo $?`
+}
+
+# Stop and remove the container specified by the passed in id.
+docker_stop() {
+  typeset container_id=$1
+  echo "> sending stop to container $container_id"
+  /usr/bin/env docker stop $container_id > $CMD_OUT || true
+
+  end_time=(expr `date +%s` + $TIMEOUT)
+  while true; do
+    typeset running_info=$(/usr/bin/env docker ps --no-trunc --filter status=running --format "{{.ID}}" | grep -F "$container_id" | cat)
+    if [[ $running_info == "" ]]; then
+      break
+    fi
+
+    if [[ `date +%s` > $end_time ]]; then
+      exit 1
+    else
+      sleep 1
+    fi
+  done
+
+  # If the container is still running and we didn't send a KILL signal, try that now.
+  typeset running_info=$(/usr/bin/env docker ps --no-trunc --filter status=running --format "{{.ID}}" | grep -F "$container_id" | cat)
+  if [[ $running_info != "" && $STOP_SIGNAL != "SIGKILL" ]]; then
+    echo "> container still running; sending kill to container $container_id"
+    /usr/bin/env docker kill --signal=SIGKILL $container_id > $CMD_OUT
+    sleep 1
+  fi
+
+  /usr/bin/env docker container rm $container_id > $CMD_OUT
+}
+
+# Remove the specified container name from docker.
+docker_remove_container_name() {
+  typeset container_name=$1
+  typeset container_info=$(/usr/bin/env docker container ls --no-trunc --format "{{.ID}};{{.Names}};" | grep -F ";$container_name;" | cat)
+  if [[ $container_info != "" ]]; then
+    typeset info_arr=
+    IFS=';' read -ra info_arr <<< "$container_info"
+    unset IFS
+    typeset container_id=${info_arr[1]}
+    /usr/bin/env docker container rm $container_id > $CMD_OUT
+  fi
+}
+
+# Shutdown containers that are no longer used. Detected by comparing
+# the container numbers in the container name to the number of containers
+# that were requested to start.
+shutdown_excess_containers() {
+  typeset container_names=()
+  for i in $(seq 1 $CONTAINER_COUNT); do
+    container_names+=("$CONTAINER_NAME_PREFIX.$i")
+  done
+
+  typeset container_info=()
+  typeset line=
+  while IFS= read -r line; do
+    container_info+=( "$line" )
+  done < <( /usr/bin/env docker ps --no-trunc --format ";{{.ID}};{{.Names}};" | grep -F ";$CONTAINER_NAME_PREFIX." | cat )
+  unset IFS
+
+  for info in "${container_info[@]}"; do
+    typeset info_arr=
+    IFS=';' read -ra info_arr <<< "$info"
+    unset IFS
+    typeset container_id=${info_arr[1]}
+    typeset container_name=${info_arr[2]}
+    if [[ ! " ${container_names[@]} " =~ " ${container_name} " ]]; then
+      docker_stop $container_id
+    fi
+  done
+}
+
+# Get the image id a container is running.
+container_image_id() {
+  typeset name="$CONTAINER_NAME_PREFIX.$1"
+  typeset running_info=$(/usr/bin/env docker ps --no-trunc --filter status=running --format ";{{.Image}};{{.Names}};" | grep -F ";$name;" | cat)
+  if [[ $running_info != "" ]]; then
+    typeset info_arr=
+    IFS=';' read -ra info_arr <<< "$running_info"
+    unset IFS
+    echo ${info_arr[1]}
+  fi
+}
+
+# Stop the container with the specified name if it is running.
+stop_container() {
+  typeset name="$CONTAINER_NAME_PREFIX.$1"
+  typeset running_info=$(/usr/bin/env docker ps --no-trunc --format ";{{.ID}};{{.Names}};" | grep -F ";$name;" | cat)
+  if [[ $running_info != "" ]]; then
+    typeset info_arr=
+    IFS=';' read -ra info_arr <<< "$running_info"
+    unset IFS
+    typeset container_id=${info_arr[1]}
+    docker_stop $container_id
+  else
+    docker_remove_container_name "$name"
+  fi
+}
+
+start_container() {
+  typeset name="$CONTAINER_NAME_PREFIX.$1"
+  echo "> start container $name"
+  typeset port_args=$(docker_port_args $1)
+  typeset host_arg="${CONTAINER_NAME_PREFIX}-${1}.${CONTAINER_BASE_HOST_NAME}"
+  typeset docker_cmd="/usr/bin/env docker run --detach --name $name --hostname $host_arg $port_args $DOCKER_RUN_ARGS $DOCKER_IMAGE $DOCKER_RUN_COMMAND"
+  typeset container_id=$($docker_cmd)
+  if [[ $container_id == "" ]]; then
+    >&2 echo "container $name failed to start"
+    >&2 echo "  command: $docker_cmd"
+    exit 1
+  else
+    echo "> starting container $name: $container_id"
+  fi
+
+  typeset success=1
+  typeset end_time=(expr `date +%s` + $TIMEOUT)
+  while true; do
+    typeset running_info=$(/usr/bin/env docker ps --no-trunc --filter status=running --format ";{{.ID}};{{.Names}};{{.Status}}" | grep -F ";$name;" | cat)
+    if [[ $running_info == "" ]]; then
+      >&2 echo "container $name not running when it was expected"
+      exit 1
+    fi
+    typeset info_arr=
+    IFS=';' read -ra info_arr <<< "$running_info"
+    unset IFS
+
+    typeset status=${info_arr[3]}
+    if [[ $status == "Up"* ]]; then
+      if [[ $HEALTHCHECK != "" ]]; then
+        healthy=`docker_healthcheck $container_id "$HEALTHCHECK"`
+        if [[ $healthy == "0" ]]; then
+          success=0
+          break
+        fi
+      else
+        if [[ $status == *"health"* ]]; then
+          if [[ $status == *"healthy"* ]]; then
+            success=0
+            break
+          fi
+        else
+          success=0
+          break
+        fi
+      fi
+    fi
+
+    if [[ `date +%s` > $end_time ]]; then
+      break
+    else
+      sleep 1
+    fi
+  done
+
+  if [[ $success ]]; then
+    echo "> container $name up: $container_id"
+  else
+    >&2 echo "container $name did not start up after $TIMEOUT seconds"
+    exit 1
+  fi
+}
+
+one_off_container() {
+  typeset port_args=$(docker_port_args 1)
+  typeset docker_cmd="/usr/bin/env docker run $port_args $DOCKER_RUN_ARGS $DOCKER_IMAGE"
+  if [[ $CONTAINER_NAME_PREFIX != "" ]]; then
+    docker_cmd="$docker_cmd --name $CONTAINER_NAME_PREFIX"
+  fi
+  if [[ $CONTAINER_BASE_HOST_NAME != "" ]]; then
+    docker_cmd="$docker_cmd --hostname $CONTAINER_BASE_HOST_NAME"
+  fi
+  if [[ $DOCKER_RUN_COMMAND != "" ]]; then
+    docker_cmd="$docker_cmd $DOCKER_RUN_COMMAND"
+  fi
+  exec $docker_cmd
+}
+
+###
+### Parse command line options
+###
+
+DOCKER_IMAGE=
+CONTAINER_NAME_PREFIX=
+CONTAINER_COUNT=1
+PORT_MAPPPING=()
+DOCKER_RUN_COMMAND=
+HEALTHCHECK=
+TIMEOUT=120
+CMD_OUT=/dev/null
+DOCKER_RUN_ARGS=
+FORCE_RESTART=
+ONE_OFF_CONTAINER=
+
+read_arguments $@
+
+if [[ $ONE_OFF_CONTAINER == "1" ]]; then
+  one_off_container
+fi
+
+if [[ $CONTAINER_NAME_PREFIX == "" ]]; then
+  usage
+  exit 1
+fi
+
+if [[ $CONTAINER_COUNT > 0 ]]; then
+  if [[ $DOCKER_IMAGE == "" ]]; then
+    usage
+    exit 1
+  else
+    typeset image_id=$(/usr/bin/env docker inspect --type=image --format {{.Config.Image}} $DOCKER_IMAGE)
+    if [[ $image_id == "" ]]; then
+      >&2 echo "Could not find image $DOCKER_IMAGE"
+      exit 1
+    else
+      echo "> using image $image_id"
+    fi
+  fi
+fi
+
+if [[ $CONTAINER_BASE_HOST_NAME == "" ]]; then
+  CONTAINER_BASE_HOST_NAME=$(hostname)
+fi
+
+shutdown_excess_containers
+
+if [[ $CONTAINER_COUNT > 0 ]]; then
+  # Cleanup docker environment so there are no surprises
+  /usr/bin/env docker container prune -f > $CMD_OUT
+  for i in $(seq 1 $CONTAINER_COUNT); do
+    typeset image_id=$(container_image_id $i)
+    if [[ $image_id != "" && $image_id == $DOCKER_IMAGE && $FORCE_RESTART == "" ]]; then
+      echo "> container ${CONTAINER_NAME_PREFIX}.${i} already running $DOCKER_IMAGE"
+    else
+      stop_container $i
+      start_container $i
+    fi
+  done
+fi
+
+/usr/bin/env docker ps | grep -F " $CONTAINER_NAME_PREFIX." || true
+
+exit 0
