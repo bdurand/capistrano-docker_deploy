@@ -17,7 +17,6 @@ end
 
 namespace :deploy do
   after :new_release_path, "docker:create_release"
-  before :set_current_revision, "docker:set_image_id"
   after :updating, "docker:update"
   after :published, "docker:restart"
 end
@@ -34,7 +33,7 @@ namespace :docker do
     end
   end
 
-  task :set_image_id do
+  task :set_image_id => :build do
     on release_roles(fetch(:docker_roles)).first do
       docker_tag_url =  "#{fetch(:docker_repository)}:#{fetch(:docker_tag)}"
       as_docker_user do
@@ -44,8 +43,12 @@ namespace :docker do
     end
   end
 
+  desc "Build and tag the docker image. This task does nothing by default, but can be implemented where needed."
+  task :build do
+  end
+
   desc "Update the configuration and command line arguments for running a docker deployment."
-  task :update do
+  task :update => :set_image_id do
     invoke("docker:copy_configs")
     invoke("docker:upload_commands")
   end

@@ -107,3 +107,7 @@ def ecr_login_script
   BASH
 end
 ```
+
+## Building Docker Image
+
+If you need to build the docker image on the remote host as part of the deploy (for example if you're deploying pre-release code to a staging server), you can implement the `docker:build` task to build your docker image. You must also tag the image with the value in the `:docker_tag` property.
