@@ -53,7 +53,7 @@ namespace :docker do
     invoke("docker:upload_commands")
   end
 
-  desc "Prune the docker engine of all unused images, containers, and volumes."
+  desc "Prune the docker engine of all dangling images, containers, and volumes."
   task :prune do
     on release_roles(fetch(:docker_roles)) do |host|
       as_docker_user do

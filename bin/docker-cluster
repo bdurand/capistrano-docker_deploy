@@ -42,7 +42,9 @@
 # is to only restart containers if they are not running the specified image.
 #
 # The --one-off parameter can be used to specify that a one off container should be spun up instead of stopping
-# and starting containers in the cluster.
+# and starting containers in the cluster. Any --port, --hostname, --healthcheck, and --name arguments that appear
+# before this argument will be ignored. If these arguments appear after the --one-off argument, then they will
+# be passed through to the `docker run` command.
 #
 # The --verbose parameter can be used for debugging and will show all the shell commands as they are run.
 #
@@ -53,11 +55,11 @@ set -o errexit
 usage() {
   script_name=$(basename $0)
   echo "Usage: $script_name"
-  echo "  --name -n CONTAINER_NAME_PREFIX (or --one-off)"
-  echo "  [--count -c CONTAINER_COUNT] (default 1)"
-  echo "  [--image -i DOCKER_IMAGE] (image tag or id; required if --count > 0)"
-  echo "  [--port -p CONTAINER_PORT[:BASE_HOST_PORT]]"
-  echo "  [--hostname -h CONTAINER_BASE_HOST_NAME]"
+  echo "  --name CONTAINER_NAME_PREFIX (or --one-off)"
+  echo "  [--count CONTAINER_COUNT] (default 1)"
+  echo "  [--image DOCKER_IMAGE] (image tag or id; required if --count > 0)"
+  echo "  [--port CONTAINER_PORT[:BASE_HOST_PORT]]"
+  echo "  [--hostname CONTAINER_BASE_HOST_NAME]"
   echo "  [--healthcheck COMMAND|CURL_URL]"
   echo "  [--timeout SECONDS] (default 120)"
   echo "  [--config CONFIG_FILE_PATH]"
@@ -112,6 +114,10 @@ read_arguments() {
         ;;
       --one-off )
         ONE_OFF_CONTAINER="1"
+        CONTAINER_NAME_PREFIX=""
+        CONTAINER_BASE_HOST_NAME=""
+        HEALTHCHECK=""
+        PORT_MAPPPING=()
         ;;
       --healthcheck )
         [[ -z $val ]] && shift && val=$1
