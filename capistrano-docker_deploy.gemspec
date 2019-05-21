@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "lib/capistrano-docker_deploy/version"
+require_relative "lib/capistrano/docker_deploy/version"
 
 Gem::Specification.new do |spec|
   spec.name          = "capistrano-docker_deploy"
