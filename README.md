@@ -36,7 +36,7 @@ The deployment is configured with the following properties in your capistrano re
 
 ### Example Configuration
 
-```
+```ruby
 set :docker_repository, repository.example.com/myapp
 
 set :docker_tag, ENV.fetch("tag")
@@ -68,25 +68,32 @@ set :docker_user, "root"
 set :docker_env, {"HOME" => "/root"}
 ```
 
+## Capfile and SCM setting
+
+The deployment does not require a source control management system to perform the build. To turn off this feature you need to include this in your project's Capfile to include the Docker deployment recipe and turn off the default (git) SCM setting for capistrano.
+
+```ruby
+  require 'capistrano/docker_deploy'
+  install_plugin Capistrano::Scm::None::Plugin
+```
+
 ## Remote Repository
 
 If your `docker_repository` points to a remote repository, then the tag specified by `docker_tag` will be pulled from that repository during the deploy. If the repository requires authentication, then you should implement the `docker:authenticate` task to authenticate all servers in the `docker_role` role with the repository. You can use the `as_docker_user` method to run docker commands as the user specified in `docker_user`.
 
 ### Example Authentication with Amazon ECR
 
-```
+```ruby
 namespace :docker do
   task :authenticate do
-    ecr_login_path = "/tmp/ecr_login_#{SecureRandom.hex(8)}"
+    bin_dir = "#{fetch(:release_path)}/bin"
+    ecr_login_path = "#{bin_dir}/ecr_login"
     on release_roles(fetch(:docker_roles)) do |host|
-      begin
-        upload! StringIO.new(ecr_login_script), ecr_login_path
-        execute :chmod, "a+x", ecr_login_path
-        as_docker_user do
-          execute ecr_login_path
-        end
-      ensure
-        execute :rm, ecr_login_path
+      execute(:mkdir, "-p", bin_dir)
+      upload! StringIO.new(ecr_login_script), ecr_login_path
+      execute :chmod, "755", ecr_login_path
+      as_docker_user do
+        execute ecr_login_path.to_sym
       end
     end
   end

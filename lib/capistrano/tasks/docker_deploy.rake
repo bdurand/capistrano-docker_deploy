@@ -19,6 +19,9 @@ namespace :deploy do
   after :new_release_path, "docker:create_release"
   after :updating, "docker:update"
   after :published, "docker:restart"
+
+  task :upload do
+  end
 end
 
 namespace :docker do
@@ -57,7 +60,7 @@ namespace :docker do
   task :prune do
     on release_roles(fetch(:docker_roles)) do |host|
       as_docker_user do
-        execute :docker, "system", "prune", "--volumes", "--force"
+        execute :docker, "system", "prune", "--force"
       end
     end
   end
