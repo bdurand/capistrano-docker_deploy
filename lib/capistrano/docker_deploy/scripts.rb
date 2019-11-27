@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "time"
+
 module Capistrano
   module DockerDeploy
     class Scripts
@@ -14,15 +16,19 @@ module Capistrano
         apps = Array(fetch_for_host(host, :docker_apps))
         cmd = "exec bin/docker-cluster"
         image_id = fetch(:docker_image_id)
+        prefix = fetch(:docker_prefix)
 
         cases = []
         apps.each do |app|
           args = app_host_args(app, host)
-          cases << "  '#{app}')\n    #{cmd} #{args.join(' ')} --name '#{app}' --image '#{image_id}' ${args[*]}\n    ;;"
+          cases << "  '#{app}')\n    #{cmd} #{args.join(' ')} --name '#{prefix}#{app}' --image '#{image_id}' ${args[*]}\n    ;;"
         end
 
         <<~BASH
           #!/usr/bin/env bash
+
+          # Generated: #{Time.now.utc.iso8601}
+          # Docker image tag: #{fetch(:docker_repository)}/#{fetch(:docker_tag)}
 
           set -o errexit
 
@@ -64,6 +70,9 @@ module Capistrano
         <<~BASH
           #!/usr/bin/env bash
 
+          # Generated: #{Time.now.utc.iso8601}
+          # Docker image tag: #{fetch(:docker_repository)}/#{fetch(:docker_tag)}
+
           set -o errexit
 
           cd $(dirname $0)/..
@@ -91,13 +100,19 @@ module Capistrano
       # Build a custom command line stop script for each docker application on the host.
       def stop_script(host)
         apps = Array(fetch_for_host(host, :docker_apps))
+        prefix = fetch(:docker_prefix)
+
         cases = []
         all = []
         apps.each do |app|
-          cases << "  '#{app}')\n    exec bin/docker-cluster --name #{app} --count 0\n    ;;"
+          cases << "  '#{app}')\n    exec bin/docker-cluster --name '#{prefix}#{app}' --count 0\n    ;;"
         end
+
         <<~BASH
           #!/usr/bin/env bash
+
+          # Generated: #{Time.now.utc.iso8601}
+          # Docker image tag: #{fetch(:docker_repository)}/#{fetch(:docker_tag)}
 
           set -o errexit
 

@@ -14,25 +14,27 @@ The full set of arguments can be found in the `bin/docker-cluster` script.
 
 The deployment is configured with the following properties in your capistrano recipe.
 
-* docker_repository - The URI for the repository where to pull images from. If you are building images on the docker host (i.e. for a staging server), this can just be the local respoitory.
+* `docker_repository` - The URI for the repository where to pull images from. If you are building images on the docker host (i.e. for a staging server), this can just be the local respoitory.
 
-* docker_tag - The tag of the image to pull for starting the containers.
+* `docker_tag` - The tag of the image to pull for starting the containers.
 
-* docker_roles - List of server roles that will run docker containers. This defaults to `:docker`, but you can change it to whatever server roles you have in your recipe.
+* `docker_roles` - List of server roles that will run docker containers. This defaults to `:docker`, but you can change it to whatever server roles you have in your recipe.
 
-* docker_user - User to use when running docker commands on the remote host. This user must have access to the docker daemon. Default to the default capistrano user.
+* `docker_user` - User to use when running docker commands on the remote host. This user must have access to the docker daemon. Default to the default capistrano user.
 
-* docker_env - Environment variables needed to run docker commands. You may need to set `HOME` if you are pulling docker images from a remote repository using a use that is not the default deploy user.
+* `docker_env` - Environment variables needed to run docker commands. You may need to set `HOME` if you are pulling docker images from a remote repository using a use that is not the default deploy user.
 
-* docker_apps - List of apps to deploy. Each app is deployed to its own containers with its own configuration. This value should usually be defined on a server role.
+* `docker_apps` - List of apps to deploy. Each app is deployed to its own containers with its own configuration. This value should usually be defined on a server role.
 
-* docker_configs - List of global configuration files for starting all containers.
+* `docker_prefix` - Optional prefix to attach to docker container names. This can be used to distinguish containers where multiple applications are running on the same host with the same `docker_apps` names (for instance, if you run staging containers on the same hardware as your production containers).
 
-* docker_app_configs - Map of configuration files for starting specific docker apps.
+* `docker_configs` - List of global configuration files for starting all containers.
 
-* docker_args - List of global command line arguments for all continers.
+* `docker_app_configs` - Map of configuration files for starting specific docker apps.
 
-* docker_app_args - Map of command line arguments for starting specific docker apps.
+* `docker_args` - List of global command line arguments for all continers.
+
+* `docker_app_args` - Map of command line arguments for starting specific docker apps.
 
 ### Example Configuration
 
@@ -91,9 +93,8 @@ namespace :docker do
     on release_roles(fetch(:docker_roles)) do |host|
       execute(:mkdir, "-p", bin_dir)
       upload! StringIO.new(ecr_login_script), ecr_login_path
-      execute :chmod, "755", ecr_login_path
       as_docker_user do
-        execute ecr_login_path.to_sym
+        execute :bash, ecr_login_path
       end
     end
   end
