@@ -94,7 +94,7 @@ read_arguments() {
         ;;
       --port )
         [[ -z $val ]] && shift && val=$1
-        PORT_MAPPPING+=($val)
+        PORT_MAPPING+=($val)
         ;;
       --hostname )
         [[ -z $val ]] && shift && val=$1
@@ -117,7 +117,7 @@ read_arguments() {
         CONTAINER_NAME_PREFIX=""
         CONTAINER_BASE_HOST_NAME=""
         HEALTHCHECK=""
-        PORT_MAPPPING=()
+        PORT_MAPPING=()
         ;;
       --healthcheck )
         [[ -z $val ]] && shift && val=$1
@@ -151,7 +151,7 @@ read_arguments() {
 # be mapped to it's own host port.
 docker_port_args() {
   typeset port_args=
-  for port_info in "${PORT_MAPPPING[@]}"; do
+  for port_info in "${PORT_MAPPING[@]}"; do
     typeset split_port=
     IFS=':' read -ra split_port <<< "$port_info"
     unset IFS
@@ -362,7 +362,7 @@ one_off_container() {
 DOCKER_IMAGE=
 CONTAINER_NAME_PREFIX=
 CONTAINER_COUNT=1
-PORT_MAPPPING=()
+PORT_MAPPING=()
 DOCKER_RUN_COMMAND=
 HEALTHCHECK=
 TIMEOUT=120
